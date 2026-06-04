@@ -68,14 +68,15 @@ def expected_kicktipp_scores(probs: np.ndarray, score_matrices: np.ndarray):
 
 
 def best_kicktipp_prediction(quotes: dict[str, float], max_goals=4, knockout=False):
-    probs = quotes_to_probs(quotes)
-
     if knockout:
-        # In knockout stages, draws are not possible, so we set their probabilities to zero
-        for res in list(probs.keys()):
-            if res.split(":")[0] == res.split(":")[1]:  # draw result
-                probs[res] = 0
+        # In knockout stages, we only consider scorelines that do not end in a draw
+        quotes = {
+            res: quote
+            for res, quote in quotes.items()
+            if res.split(":")[0] != res.split(":")[1]
+        }
 
+    probs = quotes_to_probs(quotes)
     probs = probs_dict_to_matrix(probs, max_goals=max_goals)
 
     score_matrices = generate_kicktipp_score_matrices(max_goals=max_goals)
