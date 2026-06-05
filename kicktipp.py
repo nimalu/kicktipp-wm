@@ -1,4 +1,5 @@
 from collections import namedtuple
+import time
 import mechanicalsoup
 
 Bet = namedtuple("Bet", "match_day match_id home_team away_team home_goals away_goals")
@@ -63,7 +64,7 @@ class KicktippApi:
                 continue
         return matches
 
-    def submit_bets(self, community: str, bets: list[Bet]) -> None:
+    def submit_bets(self, community: str, bets: list[Bet], friendly=True) -> None:
         bets_by_matchday: dict[str, list[Bet]] = {}
         for t in bets:
             match_day = str(t.match_day)
@@ -72,7 +73,12 @@ class KicktippApi:
             bets_by_matchday[match_day].append(t)
 
         for match_day, matchday_bets in bets_by_matchday.items():
+            if friendly:
+                # wait a bit between requests
+                time.sleep(5)   
+
             self.browser.open(self._build_bet_url(community, match_day))
+            print(f"Submitting bets for matchday {match_day}...")
 
             # Select the form first
             self.browser.select_form("form")
@@ -82,6 +88,7 @@ class KicktippApi:
             field_away_tips = page.select('input[id$="_gastTipp"]')
 
             for match in matchday_bets:
+                print(f"{match.home_team} vs {match.away_team}: {match.home_goals}:{match.away_goals}")
                 home_field = field_home_tips[match.match_id]
                 away_field = field_away_tips[match.match_id]
 

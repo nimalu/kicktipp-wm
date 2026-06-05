@@ -1,9 +1,10 @@
 import os
 import time
 import hashlib
+from typing import Callable
 
 
-def fetch_with_cache(url: str, fetcher: callable, duration=3600) -> str:
+def fetch_with_cache(url: str, fetcher: Callable[[str], str], duration=1200) -> str:
     url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
     cache_file = os.path.join("cache", f"{url_hash}")
 
