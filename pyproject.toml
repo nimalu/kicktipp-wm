@@ -15,11 +15,9 @@ dependencies = [
     "requests>=2.31.0",
 ]
 
-[project.scripts]
-compute-bets = "compute_bets:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "black", "ruff"]
+dev = ["ruff"]
 
 [tool.setuptools]
 py-modules = ["compute_bets", "kicktipp", "predictions", "tipico", "util"]

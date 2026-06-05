@@ -1,9 +1,10 @@
 import os
+import time
 
 from dotenv import load_dotenv
 
 from kicktipp import KicktippApi, Bet
-from tipico import fetch_matches, fetch_quotes, find_match
+import tipico
 from predictions import best_kicktipp_prediction
 
 
@@ -21,28 +22,23 @@ def main():
         )
 
     # 0. login to kicktipp
-    api = KicktippApi()
-    api.login(KICKTIPP_USERNAME, KICKTIPP_PASSWORD)
+    kicktipp = KicktippApi(KICKTIPP_USERNAME, KICKTIPP_PASSWORD, KICKTIPP_COMMUNITY)
 
     # 1. collect bets from kicktipp
-    bets = []
-    for i in range(1, 16):
-        try:
-            bets += api.get_bets(KICKTIPP_COMMUNITY, i)
-        except Exception as e:
-            print(f"Error fetching bets for matchday {i}: {e}")
-            break
+    bets = kicktipp.get_bets_all()
 
     # 2. collect matches from tipico
-    matches = fetch_matches()
+    matches = tipico.fetch_matches()
 
     # 3. use tipico quotes to predict the best bet for each match
     submissions = []
     for bet in bets:
         try:
-            match = find_match(matches, bet.home_team, bet.away_team)
+            match = tipico.find_match(matches, bet.home_team, bet.away_team)
         except ValueError:
-            print(f"Match not found for bet: {bet.home_team} vs {bet.away_team}, skipping...")
+            print(
+                f"Match not found for bet: {bet.home_team} vs {bet.away_team}, skipping..."
+            )
             continue
 
         print(f"{match.team1} vs {match.team2}")
@@ -50,7 +46,8 @@ def main():
             print(f"  Match already started or finished, skipping: {match.status}")
             continue
 
-        quotes = fetch_quotes(match.id)
+        time.sleep(2)  # be nice to tipico and avoid too many requests in a short time
+        quotes = tipico.fetch_quotes(match.id)
 
         is_knockout = bet.match_day >= 11
         res, expected_score = best_kicktipp_prediction(
@@ -73,7 +70,7 @@ def main():
             )
 
     # 4. submit bets to kicktipp
-    api.submit_bets(KICKTIPP_COMMUNITY, submissions)
+    kicktipp.submit_bets(submissions)
 
 
 if __name__ == "__main__":

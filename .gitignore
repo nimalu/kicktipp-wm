@@ -12,3 +12,4 @@ wheels/
 cache/
 .ruff_cache/
 .env
+.kicktipp_session
