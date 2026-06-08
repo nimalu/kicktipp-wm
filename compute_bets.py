@@ -44,8 +44,25 @@ def find_tipico_match(
 
 @functools.cache
 def fetch_quotes_cached(match_id: str):
-    time.sleep(5)
-    return tipico.fetch_quotes(match_id)
+    sleep_time = 2
+    for i in range(5):
+        try:
+            time.sleep(sleep_time)
+            return tipico.fetch_quotes(match_id)
+        except Exception as e:
+            print(f"Error fetching quotes for match {match_id}: {e}")
+            if i < 4:
+                print(f"Retrying in {sleep_time} seconds...")
+                time.sleep(sleep_time)
+                sleep_time ^= 2
+            else:
+                print(f"Failed to fetch quotes for match {match_id} after 5 attempts.")
+                return {}
+    try:
+        return tipico.fetch_quotes(match_id)
+    except Exception as e:
+        print(f"Error fetching quotes for match {match_id}: {e}")
+        return {}
 
 
 def load_params():
