@@ -124,7 +124,7 @@ def main():
                 quotes = fetch_quotes_cached(tipico_match.id)
 
                 (home_goals, away_goals), exp_points = best_kicktipp_prediction(
-                    quotes, scoring_rules=scoring_rules
+                    quotes, scoring_rules=scoring_rules, knockout=bet.knockout
                 )
                 print(
                     f"  Pred: {home_goals}:{away_goals} (expected points: {exp_points:.2f})"

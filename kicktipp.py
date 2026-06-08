@@ -14,6 +14,7 @@ class Bet:
     away_team: str
     home_goals: int
     away_goals: int
+    knockout: bool = False
 
 
 class Session(requests.Session):
@@ -125,11 +126,16 @@ class KicktippApi:
                 away_goals = int(away_goals) if away_goals.isdigit() else 0
             except Exception:
                 away_goals = 0
+            
+            try:
+                knockout = "n.E." in goals.text
+            except Exception:
+                knockout = False
 
             first_input = goals.find("input")
             id = first_input["id"].split("_")[1]
 
-            bets.append(Bet(id, time, home_team, away_team, home_goals, away_goals))
+            bets.append(Bet(id, time, home_team, away_team, home_goals, away_goals, knockout))
 
         return bets
 
