@@ -1,170 +1,158 @@
-from collections import namedtuple
-from http.cookiejar import MozillaCookieJar
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
-import time
-import mechanicalsoup
+import requests
+import pickle
+import bs4
 
-Bet = namedtuple("Bet", "match_day match_id home_team away_team home_goals away_goals")
+
+@dataclass
+class Bet:
+    id: str
+    time: str
+    home_team: str
+    away_team: str
+    home_goals: int
+    away_goals: int
+
+
+class Session(requests.Session):
+    def __init__(self):
+        super().__init__()
+
+    def save(self, session_path: str | Path) -> None:
+        with open(session_path, "wb") as f:
+            pickle.dump(self.cookies, f)
+
+    def load(self, session_path: str | Path) -> None:
+        with open(session_path, "rb") as f:
+            cookies = pickle.load(f)
+            self.cookies.update(cookies)
 
 
 class KicktippApi:
-    def __init__(
-        self,
-        username: str,
-        password: str,
-        community: str,
-        session_path: str | Path | None = None,
-    ):
-        self.community = community
-        self.session_path = (
-            Path(session_path)
-            if session_path
-            else Path(__file__).with_name(".kicktipp_session")
-        )
-        self.browser = mechanicalsoup.StatefulBrowser()
-        self._load_session()
-        if not self.is_logged_in():
-            self._login(username, password)
+    def __init__(self, session: Session | None = None):
+        self.session = session or Session()
 
-    def _load_session(self) -> None:
-        cookiejar = MozillaCookieJar(str(self.session_path))
-        if self.session_path.exists():
-            try:
-                cookiejar.load(ignore_discard=True, ignore_expires=True)
-            except Exception:
-                cookiejar = MozillaCookieJar(str(self.session_path))
-        self.browser.set_cookiejar(cookiejar)
-
-    def _save_session(self) -> None:
-        cookiejar = self.browser.get_cookiejar()
-        if isinstance(cookiejar, MozillaCookieJar):
-            cookiejar.save(ignore_discard=True, ignore_expires=True)
+    def get_and_raise(self, url: str) -> requests.Response:
+        res = self.session.get(url)
+        if res.status_code != 200:
+            raise ValueError("Request failed with status code: " + str(res.status_code))
+        return res
 
     def is_logged_in(self) -> bool:
-        self.browser.open("https://www.kicktipp.de/info/profil")
-        return (
-            self.browser.url is not None
-            and "/login" not in self.browser.url
-            and not self.browser.page.select('form[action*="login"]')
+        res = self.session.get("https://www.kicktipp.de/info/profil")
+        return "login" not in res.url
+
+    def login(self, username: str, password: str) -> None:
+        url = "https://www.kicktipp.de/info/profil/loginaction"
+        data = {
+            "kennung": username,
+            "passwort": password,
+        }
+        res = self.session.post(url, data=data)
+        if res.status_code != 200:
+            raise ValueError("Login failed with status code: " + str(res.status_code))
+
+    def open_league(self, league_id: str) -> None:
+        res = self.get_and_raise(f"https://www.kicktipp.de/{league_id}/tippabgabe?")
+        soup = bs4.BeautifulSoup(res.text, "html.parser")
+
+        self.tipper_id = soup.find("input", {"name": "tipperId"})["value"]
+        self.saison_id = soup.find("input", {"name": "tippsaisonId"})["value"]
+        self.league_id = league_id
+
+    def get_scoring_rules(self) -> dict:
+        res = self.get_and_raise(
+            f"https://www.kicktipp.de/{self.league_id}/spielregeln"
         )
+        soup = bs4.BeautifulSoup(res.text, "html.parser")
 
-    def _login(self, username: str, password: str) -> None:
-        self.browser.open("https://www.kicktipp.de/info/profil/login")
+        ktable = soup.find("table", class_="ktable")
+        if not ktable:
+            raise ValueError("Failed to find scoring rules table")
 
-        # 1. Select the form (usually the only one, or specify a selector like 'form')
-        self.browser.select_form('form[action*="login"]')
+        tds = ktable.find_all("td")
+        return {
+            "win_tendency": int(tds[1].text),
+            "win_goal_diff": int(tds[2].text),
+            "win_exact": int(tds[3].text),
+            "draw_tendency": int(tds[5].text),
+            "draw_exact": int(tds[7].text),
+        }
 
-        # 2. Assign values directly to the browser state
-        self.browser["kennung"] = username
-        self.browser["passwort"] = password
+    def get_matchdays(self):
+        res = self.get_and_raise(f"https://www.kicktipp.de/{self.league_id}/tippabgabe")
+        soup = bs4.BeautifulSoup(res.text, "html.parser")
 
-        # 3. Submit without needing to pass the form object manually
-        self.browser.submit_selected()
-        self._save_session()
+        matchday_anchors = soup.select(".spieltagsauswahl .dropdownoverlay a")
+        ids: list[str] = []
+        for anchor in matchday_anchors:
+            href = anchor["href"]
+            parsed_url = urlparse(href)
+            query_params = parse_qs(parsed_url.query)
+            id = query_params.get("spieltagIndex", [None])[0]
+            if id and id not in ids:
+                ids.append(id)
+        return ids
 
-    def _build_bet_url(self, matchday):
-        return f"https://www.kicktipp.de/{self.community}/tippabgabe?&spieltagIndex={matchday}"
+    def get_bets(self, matchday_id: str):
+        res = self.get_and_raise(
+            f"https://www.kicktipp.de/{self.league_id}/tippabgabe?spieltagIndex={matchday_id}"
+        )
+        soup = bs4.BeautifulSoup(res.text, "html.parser")
 
-    def _get_matchdays_from_current_page(self) -> list[int]:
-        page = self.browser.page
-        if page is None:
-            return []
+        bet_table = soup.select_one("table#tippabgabeSpiele")
 
-        matchdays = set()
-        for link in page.select('a[href*="spieltagIndex="]'):
-            href = link.get("href")
-            if not href:
-                continue
-
-            query = parse_qs(urlparse(href).query)
-            for value in query.get("spieltagIndex", []):
-                try:
-                    matchdays.add(int(value))
-                except ValueError:
-                    continue
-
-        return sorted(matchdays)
-
-    def get_bets(self, matchday) -> list[Bet]:
-        url = self._build_bet_url(matchday)
-        self.browser.open(url)
-
-        # Using self.browser.page gets you the BeautifulSoup object of the current page
-        page = self.browser.page
-
-        home_teams = [td.text.strip() for td in page.select("tr > td:nth-child(2)")]
-        away_teams = [td.text.strip() for td in page.select("tr > td:nth-child(3)")]
-
-        def value_default_0(inp):
-            return int(inp.attrs["value"]) if "value" in inp.attrs else 0
-
-        home_bets = [
-            value_default_0(inp) for inp in page.select('input[id$="_heimTipp"]')
-        ]
-        away_bets = [
-            value_default_0(inp) for inp in page.select('input[id$="_gastTipp"]')
-        ]
-
-        matches = []
-        for i in range(len(home_teams)):
+        bets: list[Bet] = []
+        for datarow in bet_table.select("tbody tr"):
+            tds = datarow.find_all("td")
+            time = tds[0].text.strip()
+            home_team = tds[1].text.strip()
+            away_team = tds[2].text.strip()
+            goals = tds[3]
             try:
-                matches.append(
-                    Bet(
-                        matchday,
-                        i,
-                        home_teams[i],
-                        away_teams[i],
-                        home_bets[i],
-                        away_bets[i],
-                    )
-                )
+                home_goals = goals.find(
+                    "input", id=lambda x: x and x.endswith("_heimTipp")
+                )["value"]
+                home_goals = int(home_goals) if home_goals.isdigit() else 0
             except Exception:
-                continue
-        return matches
+                home_goals = 0
+            try:
+                away_goals = goals.find(
+                    "input", id=lambda x: x and x.endswith("_gastTipp")
+                )["value"]
+                away_goals = int(away_goals) if away_goals.isdigit() else 0
+            except Exception:
+                away_goals = 0
 
-    def get_bets_all(self) -> list[Bet]:
-        self.browser.open(f"https://www.kicktipp.de/{self.community}/tippabgabe")
+            first_input = goals.find("input")
+            id = first_input["id"].split("_")[1]
 
-        bets = []
-        for matchday in self._get_matchdays_from_current_page():
-            bets.extend(self.get_bets(matchday))
+            bets.append(Bet(id, time, home_team, away_team, home_goals, away_goals))
 
         return bets
 
-    def submit_bets(self, bets: list[Bet], friendly=True) -> None:
-        bets_by_matchday: dict[str, list[Bet]] = {}
-        for t in bets:
-            match_day = str(t.match_day)
-            if match_day not in bets_by_matchday:
-                bets_by_matchday[match_day] = []
-            bets_by_matchday[match_day].append(t)
+    def submit_bets(self, bets: list[Bet], matchday_id: str):
+        if not bets:
+            raise ValueError("No bets provided")
 
-        for match_day, matchday_bets in bets_by_matchday.items():
-            if friendly:
-                # wait a bit between requests
-                time.sleep(5)
+        payload: dict = {}
+        payload["tipperId"] = self.tipper_id
+        payload["spieltagIndex"] = matchday_id
+        payload["tippsaisonId"] = self.saison_id
 
-            self.browser.open(self._build_bet_url(match_day))
-            print(f"Submitting bets for matchday {match_day}...")
+        for b in bets:
+            payload[f"spieltippForms[{b.id}].tippAbgegeben"] = "true"
+            payload[f"spieltippForms[{b.id}].heimTipp"] = str(b.home_goals)
+            payload[f"spieltippForms[{b.id}].gastTipp"] = str(b.away_goals)
 
-            # Select the form first
-            self.browser.select_form("form")
+        res = self.session.post(
+            f"https://www.kicktipp.de/{self.league_id}/tippabgabe", data=payload
+        )
+        if res.status_code not in (200, 302):
+            raise ValueError(
+                f"Submitting bets failed with status code: {res.status_code}"
+            )
 
-            page = self.browser.page
-            field_home_tips = page.select('input[id$="_heimTipp"]')
-            field_away_tips = page.select('input[id$="_gastTipp"]')
-
-            for match in matchday_bets:
-                print(
-                    f"{match.home_team} vs {match.away_team}: {match.home_goals}:{match.away_goals}"
-                )
-                home_field = field_home_tips[match.match_id]
-                away_field = field_away_tips[match.match_id]
-
-                # Update values via the browser object using the field names
-                self.browser[home_field.attrs["name"]] = str(match.home_goals)
-                self.browser[away_field.attrs["name"]] = str(match.away_goals)
-
-            # Submit the currently selected form
-            self.browser.submit_selected()
+        return res

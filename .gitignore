@@ -13,3 +13,4 @@ cache/
 .ruff_cache/
 .env
 .kicktipp_session
+quotes.json

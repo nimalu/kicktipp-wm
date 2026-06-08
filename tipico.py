@@ -1,17 +1,21 @@
-from util import fetch_with_cache
+from dataclasses import dataclass
+
 import json
 import requests
 
-from collections import namedtuple
 
-Match = namedtuple("Match", "id team1 team2 status eventStartTime")
-
-AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+@dataclass
+class Match:
+    id: str
+    team1: str
+    team2: str
+    status: str
+    eventStartTime: int
 
 
 def _fetch_requests(url):
     headers = {
-        "User-Agent": AGENT,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
     response = requests.get(url, headers=headers)
     return response.text
@@ -19,8 +23,7 @@ def _fetch_requests(url):
 
 def fetch_matches() -> list[Match]:
     url = "https://sports.tipico.de/v1/tpapi/programgateway/program/events/selectedEvents/all/1710510?maxMarkets=1&competitionSort=TURNOVER&groupOutrightsByTeam=true&language=de&flattenNonOutrights=true"
-    json_raw = fetch_with_cache(url, _fetch_requests)
-    data = json.loads(json_raw)
+    data = json.loads(_fetch_requests(url))
     events: dict = data["SELECTION"]["events"]
 
     matches = []
@@ -43,7 +46,7 @@ def fetch_matches() -> list[Match]:
 
 def fetch_quotes(match_id: str) -> dict[str, float]:
     url = f"https://sports.tipico.de/v1/tpapi/programgateway/program/events/{match_id}"
-    data = fetch_with_cache(url, _fetch_requests)
+    data = _fetch_requests(url)
     data = json.loads(data)
     point_bet_id = next(
         (
@@ -62,23 +65,3 @@ def fetch_quotes(match_id: str) -> dict[str, float]:
         quotes[result["caption"]] = result["quoteFloatValue"]
 
     return quotes
-
-
-def find_match(matches: list[Match], team1: str, team2: str) -> Match:
-    overwrites = {
-        "Bosnien-Herzegowina": "Bosnien & Herzegowina",
-        "Curaçao": "Curacao",
-        "Saudi-Arabien": "Saudi Arabien",
-    }
-    if team1 in overwrites:
-        team1 = overwrites[team1]
-    if team2 in overwrites:
-        team2 = overwrites[team2]
-
-    for match in matches:
-        if (match.team1 == team1 and match.team2 == team2) or (
-            match.team1 == team2 and match.team2 == team1
-        ):
-            return match
-
-    raise ValueError(f"Match not found for teams: {team1} vs {team2}")

@@ -1,76 +1,127 @@
+import functools
 import os
 import time
 
 from dotenv import load_dotenv
 
-from kicktipp import KicktippApi, Bet
+from kicktipp import KicktippApi, Bet, Session
 import tipico
 from predictions import best_kicktipp_prediction
 
 
-def main():
-    load_dotenv()
+def prepare_session(username: str, password: str) -> Session:
+    session = Session()
+    if os.path.exists(".kicktipp_session"):
+        session.load(".kicktipp_session")
 
+    api = KicktippApi(session)
+    if not api.is_logged_in():
+        api.login(username, password)
+        session.save(".kicktipp_session")
+
+    return session
+
+
+def find_tipico_match(
+    home_team: str, away_team: str, tipico_matches: list[tipico.Match]
+) -> tipico.Match:
+    overwrites = {
+        "Bosnien-Herzegowina": "Bosnien & Herzegowina",
+        "Curaçao": "Curacao",
+        "Saudi-Arabien": "Saudi Arabien",
+    }
+    if home_team in overwrites:
+        home_team = overwrites[home_team]
+    if away_team in overwrites:
+        away_team = overwrites[away_team]
+
+    for match in tipico_matches:
+        if match.team1 == home_team and match.team2 == away_team:
+            return match
+
+    raise ValueError(f"No tipico match found for {home_team} vs {away_team}")
+
+
+@functools.cache
+def fetch_quotes_cached(match_id: str):
+    time.sleep(1)
+    return tipico.fetch_quotes(match_id)
+
+
+def load_params():
+    load_dotenv()
     KICKTIPP_USERNAME = os.getenv("KICKTIPP_USERNAME")
     KICKTIPP_PASSWORD = os.getenv("KICKTIPP_PASSWORD")
-    KICKTIPP_COMMUNITY = os.getenv("KICKTIPP_COMMUNITY")
+    KICKTIPP_COMMUNITIES = os.getenv("KICKTIPP_COMMUNITIES")
 
-    if not KICKTIPP_USERNAME or not KICKTIPP_PASSWORD or not KICKTIPP_COMMUNITY:
+    if not KICKTIPP_USERNAME or not KICKTIPP_PASSWORD or not KICKTIPP_COMMUNITIES:
         raise ValueError(
             "Please set KICKTIPP_USERNAME, KICKTIPP_PASSWORD and "
-            "KICKTIPP_COMMUNITY in your .env file"
+            "KICKTIPP_COMMUNITIES in your .env file"
         )
+    return KICKTIPP_USERNAME, KICKTIPP_PASSWORD, KICKTIPP_COMMUNITIES
 
-    # 0. login to kicktipp
-    kicktipp = KicktippApi(KICKTIPP_USERNAME, KICKTIPP_PASSWORD, KICKTIPP_COMMUNITY)
 
-    # 1. collect bets from kicktipp
-    bets = kicktipp.get_bets_all()
+def is_past(bet: Bet) -> bool:
+    try:
+        time_struct = time.strptime(bet.time, "%d.%m.%y %H:%M")
+        return time.mktime(time_struct) < time.time()
+    except Exception:
+        print(f"Error parsing time for bet {bet}")
+        return False
 
-    # 2. collect matches from tipico
-    matches = tipico.fetch_matches()
 
-    # 3. use tipico quotes to predict the best bet for each match
-    submissions = []
-    for bet in bets:
-        try:
-            match = tipico.find_match(matches, bet.home_team, bet.away_team)
-        except ValueError:
-            print(
-                f"Match not found for bet: {bet.home_team} vs {bet.away_team}, skipping..."
-            )
-            continue
+def main():
+    kicktipp_username, kicktipp_password, communities = load_params()
 
-        print(f"{match.team1} vs {match.team2}")
-        if match.status != "pre_match":
-            print(f"  Match already started or finished, skipping: {match.status}")
-            continue
+    tipico_matches = tipico.fetch_matches()
 
-        time.sleep(2)  # be nice to tipico and avoid too many requests in a short time
-        quotes = tipico.fetch_quotes(match.id)
+    session = prepare_session(kicktipp_username, kicktipp_password)
+    api = KicktippApi(session)
 
-        is_knockout = bet.match_day >= 11
-        res, expected_score = best_kicktipp_prediction(
-            quotes, max_goals=4, knockout=is_knockout
-        )
-        print(f"  Current bet: {bet.home_goals}:{bet.away_goals}")
-        print(f"  Best prediction: {res[0]}:{res[1]}")
-        print(f"  Expected score: {expected_score:.2f}")
+    for community in communities.split(","):
+        print(f"Processing community: {community.strip()}")
+        api.open_league(community.strip())
+        scoring_rules = api.get_scoring_rules()
 
-        if bet.home_goals != res[0] or bet.away_goals != res[1]:
-            submissions.append(
-                Bet(
-                    bet.match_day,
-                    bet.match_id,
-                    bet.home_team,
-                    bet.away_team,
-                    res[0],
-                    res[1],
+        for matchday in api.get_matchdays():
+            print(f"Processing matchday: {matchday}")
+            bets = api.get_bets(matchday)
+            changed_bets = []
+
+            for bet in bets:
+                print(f"Processing bet: {bet.home_team} vs {bet.away_team}")
+                print(f"  Bef.: {bet.home_goals}:{bet.away_goals}")
+                if is_past(bet):
+                    print(f"  Skipping passed bet ({bet.time})")
+                    continue
+
+                try:
+                    tipico_match = find_tipico_match(
+                        bet.home_team, bet.away_team, tipico_matches
+                    )
+                except ValueError as e:
+                    print(f"  {e}")
+                    continue
+
+                quotes = fetch_quotes_cached(tipico_match.id)
+
+                (home_goals, away_goals), exp_points = best_kicktipp_prediction(
+                    quotes, scoring_rules=scoring_rules
                 )
-            )
+                print(
+                    f"  Pred: {home_goals}:{away_goals} (expected points: {exp_points:.2f})"
+                )
+                if (home_goals, away_goals) != (bet.home_goals, bet.away_goals):
+                    bet.home_goals = home_goals
+                    bet.away_goals = away_goals
+                    changed_bets.append(bet)
 
-    # 4. submit bets to kicktipp
-    kicktipp.submit_bets(submissions)
+            if changed_bets:
+                print(
+                    f"Submitting {len(changed_bets)} changed bets for matchday {matchday}..."
+                )
+                api.submit_bets(changed_bets, matchday)
 
 
 if __name__ == "__main__":
