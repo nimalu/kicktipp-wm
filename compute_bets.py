@@ -44,7 +44,7 @@ def find_tipico_match(
 
 @functools.cache
 def fetch_quotes_cached(match_id: str):
-    time.sleep(1)
+    time.sleep(5)
     return tipico.fetch_quotes(match_id)
 
 
